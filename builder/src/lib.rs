@@ -9,7 +9,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let ast = syn::parse(input).unwrap();
 
     // Build the trait implementation
-    impl_macro(&ast)
+    impl_macro(&ast).unwrap_or_else(|err| err.to_compile_error().into())
 }
 
 // returns None if type is not Option
@@ -237,7 +237,7 @@ impl<'a> ParsedField for ParsedRepeatedField<'a> {
 }
 
 impl<'a> ParsedFields<'a> {
-    pub fn new(fields: &'a FieldsNamed) -> Self {
+    pub fn new(fields: &'a FieldsNamed) -> Result<Self, syn::Error> {
         let mut normal = Vec::new();
         let mut option = Vec::new();
         let mut repeated = Vec::new();
@@ -254,7 +254,10 @@ impl<'a> ParsedFields<'a> {
                             let value = meta.value()?;
                             let s: LitStr = value.parse()?;
 
-                            let inside_ty = get_type_from_inside(&f.ty).expect("Attribute containing type is invalid: Should be in the form Vec<Type>");
+                            let inside_ty = get_type_from_inside(&f.ty).ok_or(
+                                syn::Error::new(f.span(),
+                                 format!("field \"{}\" was assigned the `each = \"arg\"` attribute, however its type is not of the form `Vec<...>`",
+                                f.ident.as_ref().unwrap())))?;
 
                             repeated_attr = true;
                             repeated.push(
@@ -266,10 +269,9 @@ impl<'a> ParsedFields<'a> {
 
                             Ok(())
                         } else {
-                            Err(meta.error("unsupported attribute"))
+                            Err(meta.error(format!("unknown attribute \"{}\"\nExpected `builder(each = \"...\")`", meta.path.get_ident().unwrap())))
                         }
-                    })
-                    .unwrap_or_else(|_| panic!("Failed to parse attribute in {:?}", f.ident))
+                    })?
                 }
             }
             if repeated_attr {
@@ -283,11 +285,11 @@ impl<'a> ParsedFields<'a> {
             }
         }
 
-        Self {
+        Ok(Self {
             normal,
             option,
             repeated,
-        }
+        })
     }
 
     pub fn iterate_fields(&self) -> impl Iterator<Item = &dyn ParsedField> {
@@ -299,17 +301,17 @@ impl<'a> ParsedFields<'a> {
     }
 }
 
-fn impl_macro(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
+fn impl_macro(ast: &syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Error> {
     let name = &ast.ident;
 
     let parsed = if let syn::Data::Struct(data) = &ast.data {
         if let syn::Fields::Named(fields) = &data.fields {
-            ParsedFields::new(fields)
+            ParsedFields::new(fields)?
         } else {
-            panic!("fields must be named");
+            return Err(syn::Error::new(ast.span(), "macro \"Builder\" does not support structs with empty or with unnamed fields"));
         }
     } else {
-        panic!("must be struct");
+        return Err(syn::Error::new(ast.span(), "macro \"Builder\" only supports structs"));
     };
 
     let builder_struct_name = syn::Ident::new(&format!("{}Builder", name), Span::call_site());
@@ -349,5 +351,5 @@ fn impl_macro(ast: &syn::DeriveInput) -> proc_macro::TokenStream {
         }
     };
 
-    gen.into()
+    Ok(gen.into())
 }
