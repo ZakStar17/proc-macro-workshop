@@ -6,7 +6,10 @@ use syn::{
 
 #[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let ast = syn::parse(input).unwrap();
+    let ast = match syn::parse(input) {
+        Ok(data) => data,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     // Build the trait implementation
     impl_macro(&ast).unwrap_or_else(|err| err.to_compile_error().into())
@@ -105,7 +108,7 @@ impl<'a> ParsedField for ParsedNormalField<'a> {
     fn init_definition(&self) -> TokenStream {
         let name = self.ident();
         quote::quote_spanned! {self.f.span()=>
-            #name: None,
+            #name: std::option::Option::None,
         }
     }
 
@@ -113,7 +116,7 @@ impl<'a> ParsedField for ParsedNormalField<'a> {
         let name = self.ident();
         let ty = &self.f.ty;
         quote::quote_spanned! {self.f.span()=>
-            pub #name: Option<#ty>,
+            pub #name: std::option::Option<#ty>,
         }
     }
 
@@ -122,7 +125,7 @@ impl<'a> ParsedField for ParsedNormalField<'a> {
         let ty = &self.f.ty;
         quote::quote_spanned! {self.f.span()=>
             pub fn #name(&mut self, #name: #ty) -> &mut Self {
-                self.#name = Some(#name);
+                self.#name = std::option::Option::Some(#name);
                 self
             }
         }
@@ -134,7 +137,7 @@ impl<'a> ParsedField for ParsedNormalField<'a> {
         quote::quote_spanned! {self.f.span()=>
             let #name = std::mem::take(&mut self.#name)
             .ok_or({
-                let err: Box<dyn std::error::Error> = #error_msg.into();
+                let err: std::boxed::Box<dyn std::error::Error> = #error_msg.into();
                 err
             })?;
         }
@@ -149,7 +152,7 @@ impl<'a> ParsedField for ParsedOptionField<'a> {
     fn init_definition(&self) -> TokenStream {
         let name = self.ident();
         quote::quote_spanned! {self.f.span()=>
-            #name: None,
+            #name: std::option::Option::None,
         }
     }
 
@@ -166,7 +169,7 @@ impl<'a> ParsedField for ParsedOptionField<'a> {
         let inside_ty = self.inside_ty;
         quote::quote_spanned! {self.f.span()=>
             pub fn #name(&mut self, #name: #inside_ty) -> &mut Self {
-                self.#name = Some(#name);
+                self.#name = std::option::Option::Some(#name);
                 self
             }
         }
@@ -308,10 +311,16 @@ fn impl_macro(ast: &syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Er
         if let syn::Fields::Named(fields) = &data.fields {
             ParsedFields::new(fields)?
         } else {
-            return Err(syn::Error::new(ast.span(), "macro \"Builder\" does not support structs with empty or with unnamed fields"));
+            return Err(syn::Error::new(
+                ast.span(),
+                "macro \"Builder\" does not support structs with empty or with unnamed fields",
+            ));
         }
     } else {
-        return Err(syn::Error::new(ast.span(), "macro \"Builder\" only supports structs"));
+        return Err(syn::Error::new(
+            ast.span(),
+            "macro \"Builder\" only supports structs",
+        ));
     };
 
     let builder_struct_name = syn::Ident::new(&format!("{}Builder", name), Span::call_site());
@@ -328,7 +337,7 @@ fn impl_macro(ast: &syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Er
         impl #builder_struct_name {
             #(#builder_from_field_functions)*
 
-            pub fn build(&mut self) -> Result<#name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#name, std::boxed::Box<dyn std::error::Error>> {
                 #(#builder_fn_var_definitions)*
 
                 Ok(#name {
