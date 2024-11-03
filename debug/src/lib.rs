@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use syn::spanned::Spanned;
+use syn::{parse_quote, spanned::Spanned, GenericParam, Generics};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -8,10 +8,20 @@ pub fn derive(input: TokenStream) -> TokenStream {
         Err(err) => return err.to_compile_error().into(),
     };
 
-    impl_macro(&ast).unwrap_or_else(|err| err.to_compile_error().into())
+    impl_macro(ast).unwrap_or_else(|err| err.to_compile_error().into())
 }
 
-fn impl_macro(ast: &syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Error> {
+// Add a bound `T: Debug` to every type parameter T.
+fn add_trait_bounds(mut generics: Generics) -> Generics {
+    for param in &mut generics.params {
+        if let GenericParam::Type(ref mut type_param) = *param {
+            type_param.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+    generics
+}
+
+fn impl_macro(ast: syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Error> {
     let name = &ast.ident;
     let name_str = name.to_string();
 
@@ -68,8 +78,11 @@ fn impl_macro(ast: &syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Er
         }
     });
 
+    let generics = add_trait_bounds(ast.generics);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     let gen = quote::quote! {
-        impl std::fmt::Debug for #name {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(#name_str)
                     #(#fmt_fn_fields)*
