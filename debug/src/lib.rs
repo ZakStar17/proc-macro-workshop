@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use syn::punctuated::Punctuated;
 use syn::visit::{self, Visit};
-use syn::{parse_quote, spanned::Spanned, GenericParam, Generics};
+use syn::{spanned::Spanned, GenericParam};
 use syn::{Path, TypePath};
 
 #[proc_macro_derive(CustomDebug, attributes(debug))]
@@ -12,18 +12,6 @@ pub fn derive(input: TokenStream) -> TokenStream {
     };
 
     impl_macro(ast).unwrap_or_else(|err| err.to_compile_error().into())
-}
-
-// Add a bound `T: Debug` to every type parameter T.
-fn add_trait_bounds(mut generics: Generics, parameters_requiring_bounds: &Vec<bool>) -> Generics {
-    for (i, param) in &mut generics.params.iter_mut().enumerate() {
-        if parameters_requiring_bounds[i] {
-            if let GenericParam::Type(ref mut type_param) = *param {
-                type_param.bounds.push(parse_quote!(std::fmt::Debug));
-            }
-        }
-    }
-    generics
 }
 
 fn is_path_phantom_data(ty: &TypePath) -> bool {
@@ -48,14 +36,14 @@ fn is_path_phantom_data(ty: &TypePath) -> bool {
 
 struct FindGenericParamVisitor<'ast> {
     all_params: &'ast Punctuated<GenericParam, syn::token::Comma>,
-    pub require_debug_generics: Vec<bool>,
+    pub paths_requiring_debug_bounds: Vec<&'ast syn::Path>,
 }
 
 impl<'ast> FindGenericParamVisitor<'ast> {
     pub fn new(params: &'ast Punctuated<GenericParam, syn::token::Comma>) -> Self {
         Self {
             all_params: params,
-            require_debug_generics: vec![false; params.len()],
+            paths_requiring_debug_bounds: Vec::new(),
         }
     }
 }
@@ -73,10 +61,15 @@ impl<'ast> Visit<'ast> for FindGenericParamVisitor<'ast> {
 
         // test if path starts with a generic parameter
         let start_indent = &i.path.segments.first().as_ref().unwrap().ident;
-        for (i, param) in self.all_params.iter().enumerate() {
+        for param in self.all_params.iter() {
             if let GenericParam::Type(ty_param) = param {
-                if *start_indent == ty_param.ident {
-                    self.require_debug_generics[i] = true;
+                if *start_indent == ty_param.ident
+                    && self
+                        .paths_requiring_debug_bounds
+                        .iter()
+                        .any(|&existing_path| i.path == *existing_path)
+                {
+                    self.paths_requiring_debug_bounds.push(&i.path);
                 }
             }
         }
@@ -143,13 +136,30 @@ fn impl_macro(ast: syn::DeriveInput) -> Result<proc_macro::TokenStream, syn::Err
 
     let mut generic_params_visitor = FindGenericParamVisitor::new(&ast.generics.params);
     generic_params_visitor.visit_derive_input(&ast);
-    let params_requiring_bounds = generic_params_visitor.require_debug_generics;
+    let paths_requiring_bounds = generic_params_visitor.paths_requiring_debug_bounds;
 
-    let generics = add_trait_bounds(ast.generics, &params_requiring_bounds);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let where_path_predicates = paths_requiring_bounds.iter().map(|p| {
+        quote::quote_spanned! {p.span()=>
+            #p: std::fmt::Debug,
+        }
+    });
 
+    let (impl_generics, ty_generics, original_where_clause) = ast.generics.split_for_impl();
+    let where_clause = if let Some(original) = original_where_clause {
+        quote::quote_spanned! {original.span()=>
+            #original
+        }
+    } else {
+        quote::quote! {where}
+    };
+
+    // the where clause probably has some error I am not aware, or at least it doesn't seem the
+    // best approach to do it this way
     let gen = quote::quote! {
-        impl #impl_generics std::fmt::Debug for #name #ty_generics #where_clause {
+        impl #impl_generics std::fmt::Debug for #name #ty_generics
+            #where_clause
+                #(#where_path_predicates)*
+            {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct(#name_str)
                     #(#fmt_fn_fields)*
