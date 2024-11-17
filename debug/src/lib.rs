@@ -64,7 +64,7 @@ impl<'ast> Visit<'ast> for FindGenericParamVisitor<'ast> {
         for param in self.all_params.iter() {
             if let GenericParam::Type(ty_param) = param {
                 if *start_indent == ty_param.ident
-                    && self
+                    && !self
                         .paths_requiring_debug_bounds
                         .iter()
                         .any(|&existing_path| i.path == *existing_path)
